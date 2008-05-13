@@ -1,4 +1,4 @@
-Win32-IntAuth version 0.1
+Win32-IntAuth version 0.12
 ==========================
 
 This module encapsulates (with Win32::API) the SSPI-API functions that are necessary
