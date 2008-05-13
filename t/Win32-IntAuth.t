@@ -8,7 +8,7 @@ BEGIN {
         or BAIL_OUT('module load failed')
 };
 
-my $c_auth = Win32::IntAuth->new(debug => 1);
+my $c_auth = Win32::IntAuth->new();
 
 isa_ok($c_auth, 'Win32::IntAuth')
     or BAIL_OUT("constructor failed");
@@ -28,21 +28,30 @@ revert
 can_ok($c_auth, @methods)
     or BAIL_OUT('method check failed');
 
-like(my $upn = $c_auth->get_username(), qr/\@/, 'get UPN');
+my $upn = $c_auth->get_username();
 
-ok(my $token = $c_auth->create_token($upn), 'create token');
+SKIP: {
 
-my $s_auth = Win32::IntAuth->new(debug => 1);
+    skip "no UPN for user found", 5 unless $upn;
 
-ok(my $ret = $s_auth->impersonate($token), 'impersonate');
+    like($upn, qr/\@/, 'get UPN');
 
-if ( $s_auth->continue_needed() ) {
-    my $token2 = $c_auth->create_token($upn, $ret);
+    ok(my $token = $c_auth->create_token($upn), 'create token');
 
-    $s_auth->impersonate($token2), 'impersonate'
-        or BAIL_OUT('impersonation failed');
+    my $s_auth = Win32::IntAuth->new();
+
+    ok(my $ret = $s_auth->impersonate($token), 'impersonate');
+
+    if ( $s_auth->continue_needed() ) {
+        my $token2 = $c_auth->create_token($upn, $ret);
+
+        $s_auth->impersonate($token2), 'impersonate'
+            or BAIL_OUT('impersonation failed');
+    }
+
+    my $new_upn = $s_auth->get_username();
+
+    is($new_upn, $upn, 'get impersonated UPN');
+
+    ok($s_auth->revert(), 'revert context');
 }
-
-is(my $new_upn = $s_auth->get_username(), $upn, 'get impersonated UPN');
-
-ok($s_auth->revert(), 'revert context');

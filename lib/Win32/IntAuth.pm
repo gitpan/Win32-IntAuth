@@ -5,7 +5,7 @@ use warnings;
 
 require Exporter;
 
-our $VERSION = '0.1';
+our $VERSION = '0.11';
 our @ISA = qw(Exporter);
 
 use Win32;
