@@ -5,7 +5,7 @@ use warnings;
 
 require Exporter;
 
-our $VERSION = '0.12';
+our $VERSION = '0.20';
 our @ISA = qw(Exporter);
 
 use Win32;
@@ -54,8 +54,6 @@ basic Windows Integrated Authentication
 This module encapsulates (with Win32::API) the SSPI-API functions that are necessary
 to authenticate and impersonate remote users from an already existing
 session without additional specification of username and password.
-
-The used Security Package is always 'Negotiate'.
 
 The module does not handle transport of the created user token to the
 server process or service nor does it provise routines for further
@@ -212,7 +210,7 @@ our %EXPORT_TAGS = (
   my $auth  = Win32::IntAuth->new([debug => 1]);
 
 Creates a new Win32::IntAuth object. By setting the C<debug>
-parameter, you'll get a bit of debugging information on STDOUT.
+parameter, you'll get a bit of debugging information on STDERR.
 
 =cut
 sub new {
@@ -246,7 +244,7 @@ Returns the last error code from a method call.
 
 =cut
 sub last_err {
-    return($_[0]->{last_err} || 'UNKNOWN ERRCODE');
+    return($_[0]->{last_err} || '0E0');
 }
 
 =head2 last_err_txt
@@ -321,9 +319,17 @@ sub _sspi_call {
     my $self  = shift;
     my $fname = shift;
 
-    warn "calling $fname\n" if $self->{debug};
+    warn "calling $fname with " 
+         . scalar(@_) 
+         . " parameters:\n" 
+         . join("\n", @_) 
+        if $self->{debug};
 
-    $self->{last_err} = $sspi{$fname}->Call(@_);
+    {
+        no warnings;
+        $self->{last_err} = $sspi{$fname}->Call(@_);
+    }    
+    
     my $rc_hex = sprintf('0x%08x', $self->{last_err});
 
     if ( $fname eq 'GetUserNameEx' ) {
@@ -344,11 +350,13 @@ sub _sspi_call {
 }
 
 
-=head2 create_token($spn [, $token])
+=head2 create_token($spn [, $mechanism [, $token]])
 
 Create and returns a token for the current process user ready to be
 sent to the server service that should authenticate/impersonate the
 client.
+
+The mechanism defaults to "Negotiate".
 
 C<$spn> has to be the UPN (User Principal Name) of the user the service
 is running as (or a dedicated Service Principal Name SPN).
@@ -358,13 +366,16 @@ continue request. It must contain the token sent back by the server.
 
 =cut
 sub create_token {
-    my($self, $spn, $token) = @_;
-
+    my($self, $spn, $mechanism, $token) = @_;
+    
+    $mechanism ||= 'Negotiate';
+    
+    # if we didn't receive a token, then acquire a new credentials handle
     unless ( $token ) {
-        my $Package    = "Negotiate" . "\x00";
+        my $Package    = $mechanism . "\x00";
         my $pExpiry    = pack('LL', 0, 0);
         $self->{hCred} = pack('LL', 0, 0);
-        my $Principal  = '';
+        my $Principal  = undef;
 
         $self->_sspi_call(
             'AcquireCredentialsHandle',
@@ -384,19 +395,24 @@ sub create_token {
         unless $self->{Context} and $self->{Context} =~ /[^\0]/;
 
     my $pContextAttr = pack('L', 0);
-    my $buf_size     = 4096;
-    my $sec_inbuf    = pack("L L P$buf_size", $buf_size, SECBUFFER_TOKEN, $token);
+
+    my $in_buf_size  = length($token);
+    my $sec_inbuf    = pack("L L P$in_buf_size", $in_buf_size, SECBUFFER_TOKEN, $token);
     my $pInput       = pack('L L P', 0, 1, $sec_inbuf);
-    my $out_buf      = ' ' x $buf_size;
-    my $sec_outbuf   = pack("L L P$buf_size", $buf_size, SECBUFFER_TOKEN, $out_buf);
+
+    my $out_buf_size = 4096;
+    my $out_buf      = "\x00" x $out_buf_size;
+    my $sec_outbuf   = pack("L L P$out_buf_size", $out_buf_size, SECBUFFER_TOKEN, $out_buf);
     my $pOutput      = pack('L L P', 0, 1, $sec_outbuf);
+
+    my $pExpiry      = pack('LL', 0, 0);
 
     $self->_sspi_call(
         'InitializeSecurityContext',
         $self->{hCred},
         $token ? $self->{Context} : 0,
         $spn,
-        ISC_REQ_CONNECTION,
+        0,
         0,
         SECURITY_NATIVE_DREP,
         $token ? $pInput : 0,
@@ -404,11 +420,17 @@ sub create_token {
         $self->{Context},
         $pOutput,
         $pContextAttr,
-        0,
+        $pExpiry,
     ) or return;
 
-    $self->{continue} = 1
-        if $self->{last_err} == SEC_I_CONTINUE_NEEDED;
+    $self->{continue} 
+        = $self->{last_err} == SEC_I_CONTINUE_NEEDED
+        ? 1
+        : 0;
+
+    # retrieve new output buffer size and trim the buffer to that size
+    $out_buf_size = unpack('L', $sec_outbuf);
+    $out_buf      = substr($out_buf, 0, $out_buf_size);
 
     return($out_buf);
 }
@@ -586,7 +608,7 @@ Thomas Kratz E<lt>tomk@cpan.orgE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2008 by Thomas Kratz
+Copyright (C) 2011 by Thomas Kratz
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,
